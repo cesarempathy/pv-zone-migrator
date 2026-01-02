@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -259,12 +258,7 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 	}
 
 	// Print header info
-	if configFile != "" {
-		fmt.Printf("%s %s\n", cliDimStyle.Render("📄 Config:"), configFile)
-	}
-	if kubeContext != "" {
-		fmt.Printf("%s %s\n", cliDimStyle.Render("☸  Context:"), kubeContext)
-	}
+	printHeaderInfo()
 
 	// Initialize Kubernetes client with optional context
 	k8sClient, err := k8s.NewClient(kubeContext)
@@ -272,36 +266,13 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
-	// Discover PVCs
-	allPVCs, pvcsByNamespace, err := discoverPVCs(ctx, k8sClient)
-	if err != nil {
-		return err
-	}
-	if len(allPVCs) == 0 {
-		return fmt.Errorf("no PVCs found in any of the specified namespaces")
-	}
-	fmt.Println(buildDiscoveryBox(pvcsByNamespace, len(allPVCs)))
-
-	// Handle ArgoCD applications
-	argoCDApps, err := handleArgoCDApps(ctx, k8sClient)
+	// Discover PVCs and collect initial information
+	allPVCs, _, argoCDApps, _, workloadInfoByNS, err := initializeMigration(ctx, k8sClient)
 	if err != nil {
 		return err
 	}
 
-	// Collect workload information
-	workloadsByNS, workloadInfoByNS, err := collectWorkloadInfo(ctx, k8sClient, argoCDApps)
-	if err != nil {
-		return err
-	}
-	fmt.Println(buildWorkloadsBox(workloadsByNS, dryRun, scaleMode))
-
-	// Calculate total workloads
-	totalWorkloads := 0
-	for _, workloads := range workloadsByNS {
-		totalWorkloads += len(workloads)
-	}
-
-	// Create migration context for helper functions
+	// Create migration context
 	mc := &migrationContext{
 		ctx:              ctx,
 		k8sClient:        k8sClient,
@@ -309,28 +280,120 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 		workloadInfoByNS: workloadInfoByNS,
 	}
 
-	// Handle workload scaling if needed
+	// Handle workload scaling
+	totalWorkloads := calculateTotalWorkloads(workloadInfoByNS)
 	if totalWorkloads > 0 && !dryRun {
-		var err error
-		switch scaleMode {
-		case scaleModeManual:
-			err = mc.handleManualScaling()
-		default:
-			err = mc.handleAutoScaling()
-		}
-		if err != nil {
+		if err := handleWorkloadScaling(mc); err != nil {
 			return err
 		}
 	}
 
-	// Initialize AWS EC2 client
+	// Initialize AWS client and create migrator
 	ec2Client, err := aws.NewEC2Client(ctx)
 	if err != nil {
 		mc.restoreOnError()
 		return fmt.Errorf("failed to create AWS EC2 client: %w", err)
 	}
 
-	// Build PVC list with namespace prefix for the migrator
+	m, config := createMigrator(k8sClient, ec2Client, allPVCs)
+
+	// Handle plan-only mode
+	if planOnly {
+		return handlePlanMode(ctx, m)
+	}
+
+	// Run migration UI
+	finalModel, err := runMigrationUI(mc, m, config)
+	if err != nil {
+		mc.restoreOnError()
+		return err
+	}
+
+	// Print summary and cleanup
+	if fm, ok := finalModel.(ui.Model); ok {
+		fm.PrintSummary()
+		if fm.HasErrors() {
+			os.Exit(1)
+		}
+	}
+
+	// Restore workloads and ArgoCD
+	restoreWorkloads(ctx, k8sClient, mc)
+	restoreArgoCDAutoSync(ctx, k8sClient, mc)
+
+	return nil
+}
+
+// printHeaderInfo prints the migration header information
+func printHeaderInfo() {
+	if configFile != "" {
+		fmt.Printf("%s %s\n", cliDimStyle.Render("📄 Config:"), configFile)
+	}
+	if kubeContext != "" {
+		fmt.Printf("%s %s\n", cliDimStyle.Render("☸  Context:"), kubeContext)
+	}
+}
+
+// initializeMigration discovers PVCs, ArgoCD apps, and workloads
+func initializeMigration(ctx context.Context, k8sClient *k8s.Client) (
+	[]pvcWithNamespace,
+	map[string][]string,
+	[]k8s.ArgoCDAppInfo,
+	map[string][]string,
+	map[string][]k8s.WorkloadInfo,
+	error,
+) {
+	// Discover PVCs
+	allPVCs, pvcsByNamespace, err := discoverPVCs(ctx, k8sClient)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	if len(allPVCs) == 0 {
+		return nil, nil, nil, nil, nil, fmt.Errorf("no PVCs found in any of the specified namespaces")
+	}
+	fmt.Println(buildDiscoveryBox(pvcsByNamespace, len(allPVCs)))
+
+	// Handle ArgoCD applications
+	argoCDApps, err := handleArgoCDApps(ctx, k8sClient)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+
+	// Collect workload information
+	workloadsByNS, workloadInfoByNS, err := collectWorkloadInfo(ctx, k8sClient, argoCDApps)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	fmt.Println(buildWorkloadsBox(workloadsByNS, dryRun, scaleMode))
+
+	return allPVCs, pvcsByNamespace, argoCDApps, workloadsByNS, workloadInfoByNS, nil
+}
+
+// calculateTotalWorkloads counts total workloads across all namespaces
+func calculateTotalWorkloads(workloadInfoByNS map[string][]k8s.WorkloadInfo) int {
+	total := 0
+	for _, workloads := range workloadInfoByNS {
+		total += len(workloads)
+	}
+	return total
+}
+
+// handleWorkloadScaling handles the scaling of workloads based on scale mode
+func handleWorkloadScaling(mc *migrationContext) error {
+	switch scaleMode {
+	case scaleModeManual:
+		return mc.handleManualScaling()
+	default:
+		return mc.handleAutoScaling()
+	}
+}
+
+// createMigrator creates the migrator instance with necessary clients
+func createMigrator(k8sClient *k8s.Client, ec2Client *aws.Client, allPVCs []pvcWithNamespace) (
+	*migrator.Migrator,
+	*migrator.Config,
+) {
+	// Build PVC list with namespace prefix
 	pvcListWithNS := make([]string, 0, len(allPVCs))
 	for _, pvc := range allPVCs {
 		pvcListWithNS = append(pvcListWithNS, fmt.Sprintf("%s/%s", pvc.Namespace, pvc.Name))
@@ -346,86 +409,77 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 		DryRun:         dryRun,
 	}
 
-	// Create the migrator
 	m := migrator.New(config, k8sClient, ec2Client)
+	return m, config
+}
 
-	// Handle --plan flag: generate and display plan, then exit
-	if planOnly {
-		fmt.Println("\n🔍 Generating migration plan...")
+// handlePlanMode generates and displays the migration plan
+func handlePlanMode(ctx context.Context, m *migrator.Migrator) error {
+	fmt.Println("\n🔍 Generating migration plan...")
 
-		// Show spinner while generating plan
-		s := spinner.New()
-		s.Spinner = spinner.Dot
-		s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-
-		plan, err := m.GeneratePlan(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to generate plan: %w", err)
-		}
-
-		// Print the formatted plan
-		fmt.Print(migrator.FormatPlan(plan))
-
-		// Print confirmation hint
-		fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(
-			"Run without --plan flag to execute the migration."))
-		fmt.Println()
-
-		return nil
+	plan, err := m.GeneratePlan(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to generate plan: %w", err)
 	}
 
-	// Create and run the Bubble Tea UI
+	fmt.Print(migrator.FormatPlan(plan))
+	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(
+		"Run without --plan flag to execute the migration."))
+	fmt.Println()
+
+	return nil
+}
+
+// runMigrationUI creates and runs the Bubble Tea UI
+func runMigrationUI(_ *migrationContext, m *migrator.Migrator, config *migrator.Config) (tea.Model, error) {
 	model := ui.NewModel(m, config)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	finalModel, err := p.Run()
 	if err != nil {
-		mc.restoreOnError()
-		return fmt.Errorf("UI error: %w", err)
+		return nil, fmt.Errorf("UI error: %w", err)
 	}
 
-	// Print final summary
-	if fm, ok := finalModel.(ui.Model); ok {
-		fm.PrintSummary()
+	return finalModel, nil
+}
+
+// restoreWorkloads scales workloads back to their original replica counts
+func restoreWorkloads(ctx context.Context, k8sClient *k8s.Client, mc *migrationContext) {
+	if len(mc.scaledWorkloads) == 0 || dryRun {
+		return
 	}
 
-	// Scale workloads back up if we scaled them down
-	if len(mc.scaledWorkloads) > 0 && !dryRun {
-		fmt.Println("\n🚀 Restoring workloads to original replica counts...")
-		for _, sw := range mc.scaledWorkloads {
-			fmt.Printf("   Namespace '%s':\n", sw.Namespace)
-			for _, w := range sw.Workloads {
-				fmt.Printf("     - %s/%s → %d replicas\n", w.Kind, w.Name, w.Replicas)
-			}
-			if err := k8sClient.ScaleUpWorkloads(ctx, sw.Namespace, sw.Workloads); err != nil {
-				fmt.Printf("   ⚠️  Warning: Failed to restore some workloads in '%s': %v\n", sw.Namespace, err)
-				fmt.Println("      Please manually restore workloads using kubectl")
-			} else {
-				fmt.Printf("   ✅ Workloads restored in namespace '%s'\n", sw.Namespace)
-			}
+	fmt.Println("\n🚀 Restoring workloads to original replica counts...")
+	for _, sw := range mc.scaledWorkloads {
+		fmt.Printf("   Namespace '%s':\n", sw.Namespace)
+		for _, w := range sw.Workloads {
+			fmt.Printf("     - %s/%s → %d replicas\n", w.Kind, w.Name, w.Replicas)
 		}
-	}
-
-	// Re-enable ArgoCD auto-sync
-	if len(mc.argoCDApps) > 0 && !dryRun {
-		fmt.Println("\n🔓 Re-enabling ArgoCD auto-sync...")
-		for _, app := range mc.argoCDApps {
-			fmt.Printf("   - %s/%s\n", app.Namespace, app.Name)
-		}
-		if err := k8sClient.EnableArgoCDAutoSync(ctx, mc.argoCDApps); err != nil {
-			fmt.Printf("⚠️  Warning: Failed to re-enable ArgoCD auto-sync: %v\n", err)
-			fmt.Println("   Please manually re-enable auto-sync in ArgoCD")
+		if err := k8sClient.ScaleUpWorkloads(ctx, sw.Namespace, sw.Workloads); err != nil {
+			fmt.Printf("   ⚠️  Warning: Failed to restore some workloads in '%s': %v\n", sw.Namespace, err)
+			fmt.Println("      Please manually restore workloads using kubectl")
 		} else {
-			fmt.Println("   ✅ Auto-sync re-enabled")
+			fmt.Printf("   ✅ Workloads restored in namespace '%s'\n", sw.Namespace)
 		}
 	}
+}
 
-	// Check if we should exit with error
-	if fm, ok := finalModel.(ui.Model); ok && fm.HasErrors() {
-		os.Exit(1)
+// restoreArgoCDAutoSync re-enables auto-sync for ArgoCD applications
+func restoreArgoCDAutoSync(ctx context.Context, k8sClient *k8s.Client, mc *migrationContext) {
+	if len(mc.argoCDApps) == 0 || dryRun {
+		return
 	}
 
-	return nil
+	fmt.Println("\n🔓 Re-enabling ArgoCD auto-sync...")
+	for _, app := range mc.argoCDApps {
+		fmt.Printf("   - %s/%s\n", app.Namespace, app.Name)
+	}
+	if err := k8sClient.EnableArgoCDAutoSync(ctx, mc.argoCDApps); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to re-enable ArgoCD auto-sync: %v\n", err)
+		fmt.Println("   Please manually re-enable auto-sync in ArgoCD")
+	} else {
+		fmt.Println("   ✅ Auto-sync re-enabled")
+	}
 }
 
 // buildDiscoveryBox creates a styled box for PVC discovery results
