@@ -23,7 +23,7 @@ import (
 
 // Client wraps the Kubernetes clientset
 type Client struct {
-	clientset     *kubernetes.Clientset
+	clientset     kubernetes.Interface
 	dynamicClient dynamic.Interface
 }
 
@@ -86,6 +86,14 @@ func NewClient(kubeContext string) (*Client, error) {
 	}, nil
 }
 
+// NewClientWithInterface creates a Client with a custom clientset (for testing)
+func NewClientWithInterface(clientset kubernetes.Interface, dynamicClient dynamic.Interface) *Client {
+	return &Client{
+		clientset:     clientset,
+		dynamicClient: dynamicClient,
+	}
+}
+
 // ListPVCs returns all PVC names in the given namespace
 func (c *Client) ListPVCs(ctx context.Context, namespace string) ([]string, error) {
 	pvcList, err := c.clientset.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{})
@@ -138,8 +146,10 @@ func (c *Client) GetPVCInfo(ctx context.Context, namespace, pvcName string) (*PV
 	// Safe conversion: capacity is typically in GiB range, well within int32
 	capacityBytes := capacity.Value() / (1024 * 1024 * 1024)
 	var capacityGi int32
-	if capacityBytes > int64(^int32(0)) {
-		capacityGi = ^int32(0) // Max int32 if overflow would occur
+	// Check if value fits in int32 (max 2147483647)
+	const maxInt32 = int64(1<<31 - 1)
+	if capacityBytes > maxInt32 {
+		capacityGi = int32(maxInt32) // Max int32 if overflow would occur
 	} else {
 		capacityGi = int32(capacityBytes) //nolint:gosec // Overflow checked above
 	}

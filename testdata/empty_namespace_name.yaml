@@ -1,0 +1,6 @@
+# Configuration with empty namespace name
+namespaces:
+  - name: ""
+targetZone: "us-west-2a"
+storageClass: "gp3"
+maxConcurrency: 1

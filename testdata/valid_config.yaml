@@ -1,0 +1,16 @@
+# Valid test configuration
+kubeContext: "test-context"
+namespaces:
+  - name: test-ns
+    pvcs:
+      - pvc-1
+      - pvc-2
+  - name: another-ns
+targetZone: "us-west-2a"
+storageClass: "gp3"
+maxConcurrency: 3
+dryRun: false
+skipArgoCD: false
+argoCDNamespaces:
+  - argocd
+  - gitops
