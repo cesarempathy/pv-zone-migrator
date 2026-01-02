@@ -1,0 +1,26 @@
+# PVC Migrator Configuration
+# 
+# This file contains configuration for migrating PVCs between AWS Availability Zones.
+#
+# Each namespace can optionally specify which PVCs to migrate.
+# If no PVCs are specified for a namespace, all PVCs in that namespace will be migrated.
+#
+# CLI flags can override some values (--zone, --storage-class, etc.)
+
+# kubeContext: my-cluster-context  # Optional: kubectl context to use (defaults to current)
+
+namespaces:
+    - name: namespace-1
+      pvcs:
+        - pvc-1
+        - pvc-2
+    - name: namespace-2
+targetZone: eu-west-1a
+storageClass: gp3
+maxConcurrency: 5
+dryRun: false
+skipArgoCD: false
+argoCDNamespaces:
+    - argocd
+    - argo-cd
+    - gitops
