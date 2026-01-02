@@ -92,8 +92,7 @@ linters-settings:
       - hugeParam  # May be too strict for some use cases
 
   goimports:
-    local-prefixes:
-      - github.com/cesarempathy/pv-zone-migrator
+    local-prefixes: github.com/cesarempathy/pv-zone-migrator
 
   gosec:
     excludes:
