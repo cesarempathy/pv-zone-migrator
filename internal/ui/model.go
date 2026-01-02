@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"pvc-migrator/internal/migrator"
+	"github.com/cesarempathy/pv-zone-migrator/internal/migrator"
 )
 
 // Styles

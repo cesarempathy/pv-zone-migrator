@@ -12,10 +12,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"pvc-migrator/internal/aws"
-	"pvc-migrator/internal/k8s"
-	"pvc-migrator/internal/migrator"
-	"pvc-migrator/internal/ui"
+	"github.com/cesarempathy/pv-zone-migrator/internal/aws"
+	"github.com/cesarempathy/pv-zone-migrator/internal/k8s"
+	"github.com/cesarempathy/pv-zone-migrator/internal/migrator"
+	"github.com/cesarempathy/pv-zone-migrator/internal/ui"
 )
 
 // Console output styles

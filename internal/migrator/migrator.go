@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"pvc-migrator/internal/aws"
-	"pvc-migrator/internal/k8s"
+	"github.com/cesarempathy/pv-zone-migrator/internal/aws"
+	"github.com/cesarempathy/pv-zone-migrator/internal/k8s"
 )
 
 // Config holds the migration configuration

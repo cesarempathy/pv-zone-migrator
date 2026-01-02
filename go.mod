@@ -1,4 +1,4 @@
-module pvc-migrator
+module github.com/cesarempathy/pv-zone-migrator
 
 go 1.25.0
 

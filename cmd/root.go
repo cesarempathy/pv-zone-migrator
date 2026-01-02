@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"pvc-migrator/internal/config"
+	"github.com/cesarempathy/pv-zone-migrator/internal/config"
 )
 
 var (

@@ -16,9 +16,27 @@ A robust Go CLI tool to migrate Kubernetes PersistentVolumeClaims (PVCs) from on
 - **Thread-Safe**: Safe resource cleanup with proper mutex handling
 - **Static PV Binding**: Creates new PVs with proper node affinity for the target zone
 
+## Installation
+
+### Via go install (recommended)
+
+```bash
+go install github.com/cesarempathy/pv-zone-migrator@latest
+```
+
+This will install the binary as `pv-zone-migrator` in your `$GOPATH/bin`.
+
+### From source
+
+```bash
+git clone https://github.com/cesarempathy/pv-zone-migrator.git
+cd pv-zone-migrator
+go build -o pvc-migrator .
+```
+
 ## Prerequisites
 
-1. **Go 1.21+** installed
+1. **Go 1.21+** installed (only for building from source)
 2. **kubectl** configured with access to your cluster (uses `~/.kube/config` or `KUBECONFIG` env var)
 3. **AWS credentials** configured (via environment variables, `~/.aws/credentials`, or IAM role)
 4. **Workloads scaled down**: All pods using the PVCs must be stopped before migration
