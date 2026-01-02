@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -70,6 +71,14 @@ func (c *Config) Validate() error {
 	if c.TargetZone == "" {
 		return fmt.Errorf("targetZone is required")
 	}
+	// Validate TargetZone format (e.g., us-east-1a)
+	// This prevents basic injection and ensures it looks like an AWS AZ.
+	// A full validation against the AWS API happens later in the client.
+	azRegex := regexp.MustCompile(`^[a-z]{2}-[a-z]+-\d[a-z]$`)
+	if !azRegex.MatchString(c.TargetZone) {
+		return fmt.Errorf("targetZone '%s' is invalid; must match format like 'us-east-1a'", c.TargetZone)
+	}
+
 	if c.StorageClass == "" {
 		return fmt.Errorf("storageClass is required")
 	}

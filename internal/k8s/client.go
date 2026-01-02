@@ -65,6 +65,25 @@ func NewClient(kubeContext string) (*Client, error) {
 	}
 
 	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+
+	// Validate context before proceeding
+	rawConfig, err := kubeConfig.RawConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get raw kubeconfig: %w", err)
+	}
+
+	currentContext := rawConfig.CurrentContext
+	if kubeContext != "" {
+		currentContext = kubeContext
+	}
+
+	// Safety check: Warn if running against production-like contexts
+	if strings.Contains(strings.ToLower(currentContext), "prod") {
+		fmt.Printf("⚠️  WARNING: You are running against a context named '%s'.\n", currentContext)
+		fmt.Println("   Ensure you have the necessary permissions and are targeting the correct cluster.")
+		// In a real CLI, we might ask for confirmation here, but for now we just log the warning.
+	}
+
 	config, err := kubeConfig.ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build kubeconfig: %w", err)

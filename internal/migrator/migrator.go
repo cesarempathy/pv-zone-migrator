@@ -363,18 +363,22 @@ func (m *Migrator) migratePVC(ctx context.Context, pvcName string) {
 		}
 	}
 
-	// Step 6: Cleanup
-	m.updateStatus(pvcName, StepCleanup, 0, nil)
-	if err := m.k8sClient.CleanupResources(ctx, namespace, shortName, info.PVName); err != nil {
-		m.updateStatus(pvcName, StepFailed, 0, fmt.Errorf("cleanup: %w", err))
-		return
-	}
-
-	// Step 7: Create PV
+	// Step 6: Create PV
 	m.updateStatus(pvcName, StepCreatePV, 0, nil)
 	newPVName := shortName + "-static"
 	if err := m.k8sClient.CreateStaticPV(ctx, newPVName, newVolumeID, info.Capacity, m.config.StorageClass, m.config.TargetZone); err != nil {
 		m.updateStatus(pvcName, StepFailed, 0, fmt.Errorf("create PV: %w", err))
+		return
+	}
+
+	// Step 7: Cleanup
+	// We do cleanup AFTER creating the new PV to minimize the risk of data loss/orphaned volumes
+	// if the process crashes.
+	m.updateStatus(pvcName, StepCleanup, 0, nil)
+	if err := m.k8sClient.CleanupResources(ctx, namespace, shortName, info.PVName); err != nil {
+		// If cleanup fails, we still have the new PV created, but the old one might still exist.
+		// This is a partial failure but better than data loss.
+		m.updateStatus(pvcName, StepFailed, 0, fmt.Errorf("cleanup: %w", err))
 		return
 	}
 
