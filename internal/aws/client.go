@@ -5,6 +5,7 @@ package aws
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -41,6 +42,14 @@ func NewEC2ClientWithInterface(api ec2ClientAPI) *Client {
 	return &Client{ec2: api}
 }
 
+// SanitizeTag cleans input strings to be safe for AWS Tags.
+// Allowed characters: Alphanumeric, spaces, and _ . : / = + - @
+func SanitizeTag(input string) string {
+	// Regex to match allowed characters
+	re := regexp.MustCompile(`[^a-zA-Z0-9\s_.:/=+\-@]`)
+	return re.ReplaceAllString(input, "_")
+}
+
 // CreateSnapshot creates an EBS snapshot
 func (c *Client) CreateSnapshot(ctx context.Context, volumeID, pvcName, targetZone string) (string, error) {
 	description := fmt.Sprintf("Migrate %s to %s", pvcName, targetZone)
@@ -52,8 +61,8 @@ func (c *Client) CreateSnapshot(ctx context.Context, volumeID, pvcName, targetZo
 			{
 				ResourceType: ec2types.ResourceTypeSnapshot,
 				Tags: []ec2types.Tag{
-					{Key: aws.String("Name"), Value: aws.String(fmt.Sprintf("migrate-%s", pvcName))},
-					{Key: aws.String("MigratedPVC"), Value: aws.String(pvcName)},
+					{Key: aws.String("Name"), Value: aws.String(fmt.Sprintf("migrate-%s", SanitizeTag(pvcName)))},
+					{Key: aws.String("MigratedPVC"), Value: aws.String(SanitizeTag(pvcName))},
 				},
 			},
 		},
@@ -108,10 +117,10 @@ func (c *Client) CreateVolume(ctx context.Context, snapshotID, targetZone, pvcNa
 			{
 				ResourceType: ec2types.ResourceTypeVolume,
 				Tags: []ec2types.Tag{
-					{Key: aws.String("Name"), Value: aws.String(fmt.Sprintf("migrated-%s", pvcName))},
-					{Key: aws.String("MigratedPVC"), Value: aws.String(pvcName)},
-					{Key: aws.String("kubernetes.io/created-for/pvc/name"), Value: aws.String(pvcName)},
-					{Key: aws.String("kubernetes.io/created-for/pvc/namespace"), Value: aws.String(namespace)},
+					{Key: aws.String("Name"), Value: aws.String(fmt.Sprintf("migrated-%s", SanitizeTag(pvcName)))},
+					{Key: aws.String("MigratedPVC"), Value: aws.String(SanitizeTag(pvcName))},
+					{Key: aws.String("kubernetes.io/created-for/pvc/name"), Value: aws.String(SanitizeTag(pvcName))},
+					{Key: aws.String("kubernetes.io/created-for/pvc/namespace"), Value: aws.String(SanitizeTag(namespace))},
 				},
 			},
 		},

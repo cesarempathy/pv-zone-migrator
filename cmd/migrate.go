@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -56,6 +57,27 @@ var (
 			Foreground(lipgloss.Color("75")).
 			Width(16)
 )
+
+// initLogging configures structured logging
+func initLogging(verbose bool) {
+	level := slog.LevelInfo
+	if verbose {
+		level = slog.LevelDebug
+	}
+
+	opts := &slog.HandlerOptions{
+		Level: level,
+		// Remove time from log output for cleaner CLI experience unless verbose
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if !verbose && a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
+	slog.SetDefault(logger)
+}
 
 // scaledWorkloadsPerNS stores scaled workloads for a namespace
 type scaledWorkloadsPerNS struct {
@@ -251,6 +273,9 @@ func collectWorkloadInfo(ctx context.Context, k8sClient *k8s.Client, argoCDApps 
 
 func runMigrate(_ *cobra.Command, _ []string) error {
 	ctx := context.Background()
+
+	// Initialize structured logging
+	initLogging(verbose)
 
 	// Validate scaleMode
 	if scaleMode != scaleModeAuto && scaleMode != scaleModeManual {
