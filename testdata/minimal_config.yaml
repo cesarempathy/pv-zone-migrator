@@ -1,0 +1,6 @@
+# Minimal valid configuration
+namespaces:
+  - name: default
+targetZone: "eu-west-1a"
+storageClass: "gp3"
+maxConcurrency: 1
