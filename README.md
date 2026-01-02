@@ -7,6 +7,7 @@ A robust Go CLI tool to migrate Kubernetes PersistentVolumeClaims (PVCs) from on
 
 ## Features
 
+- **Migration Plan Preview**: View detailed migration plan before execution with `--plan` flag
 - **Beautiful TUI**: Interactive terminal UI with progress bars using Bubble Tea
 - **Cobra CLI**: Full-featured command-line interface with flags and help
 - **Concurrent Processing**: Processes multiple PVCs in parallel using goroutines with a configurable worker pool
@@ -68,6 +69,9 @@ go build -o pvc-migrator .
 # Generate an example configuration file
 ./pvc-migrator init-config my-config.yaml
 
+# Preview migration plan without executing (recommended first step)
+./pvc-migrator migrate -c config.yaml --plan
+
 # Dry run (shows what would be done)
 ./pvc-migrator migrate --dry-run
 ```
@@ -119,9 +123,91 @@ argoCDNamespaces:
 | `--zone` | `-z` | `eu-west-1a` | Target AWS Availability Zone |
 | `--storage-class` | `-s` | `gp3` | Storage class for new PVs |
 | `--concurrency` | | `5` | Max concurrent migrations |
+| `--plan` | | `false` | Show migration plan and exit without executing |
 | `--dry-run` | | `false` | Preview without making changes |
 | `--skip-argocd` | | `false` | Skip ArgoCD auto-sync handling |
 | `--argocd-namespaces` | | `argocd,argo-cd,gitops` | Namespaces to search for ArgoCD apps |
+
+## Migration Plan Preview
+
+Before executing a migration, you can preview exactly what will happen using the `--plan` flag:
+
+```bash
+./pvc-migrator migrate -c config.yaml --plan
+```
+
+This displays a detailed plan showing:
+
+```
+📄 Config: ./config.yaml
+☸  Context: my-cluster
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│ PVC Discovery                                                            │
+│                                                                          │
+│   ◆ my-namespace (5 PVCs)                                                │
+│     postgres-data             redis-data              minio-data         │
+│     elasticsearch-data        mongodb-data                               │
+│                                                                          │
+│   Total:           5 PVCs                                                │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────────────╮
+│ ArgoCD Auto-Sync                           │
+│                                            │
+│   Searched in:     argocd, argo-cd, gitops │
+│                                            │
+│   ✓ No applications with auto-sync found   │
+╰────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────╮
+│ Running Workloads                                    │
+│                                                      │
+│   ◆ my-namespace                                     │
+│     • Deployment/my-app (replicas: 3)                │
+│     • StatefulSet/postgres (replicas: 1)             │
+│                                                      │
+│   → Scaling down 2 workload(s)...                    │
+╰──────────────────────────────────────────────────────╯
+
+═══════════════════════════════════════════════════════════════════════════
+                              MIGRATION PLAN
+═══════════════════════════════════════════════════════════════════════════
+
+Configuration:
+  Target Zone:     eu-west-1b
+  Storage Class:   gp3
+  Namespaces:      my-namespace
+  Concurrency:     5
+
+PVCs to Process (5):
+  ✓ Migrate: 4  ○ Skip: 1  ✗ Error: 0
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│ PVC                          Current Zone   Action                       │
+│ ──────────────────────────────────────────────────────────────────────── │
+│ my-ns/postgres-data          eu-west-1a     ✓ Will migrate → eu-west-1b  │
+│   └─ 100Gi, Volume: vol-0abc123...                                       │
+│ my-ns/redis-data             eu-west-1a     ✓ Will migrate → eu-west-1b  │
+│   └─ 10Gi, Volume: vol-0def456...                                        │
+│ my-ns/minio-data             eu-west-1b     ○ Skip (same AZ)             │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+Actions to be performed:
+  1. Create EBS snapshots for 4 volume(s)
+  2. Create new volumes in eu-west-1b
+  3. Delete old PVCs and PVs
+  4. Create new static PVs and bound PVCs
+
+Run without --plan flag to execute the migration.
+```
+
+The plan shows:
+- **PVC Discovery**: Which PVCs were found in each namespace
+- **ArgoCD Detection**: Any ArgoCD apps that will have auto-sync disabled
+- **Running Workloads**: Workloads that will be scaled down
+- **Migration Table**: Per-PVC actions (migrate/skip) with current zones and volume details
+- **Actions Summary**: High-level steps that will be performed
 
 ## Terminal UI
 
