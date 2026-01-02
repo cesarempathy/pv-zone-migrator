@@ -20,12 +20,6 @@ import (
 	"github.com/cesarempathy/pv-zone-migrator/internal/ui"
 )
 
-// Scale mode constants
-const (
-	scaleModeAuto   = "auto"
-	scaleModeManual = "manual"
-)
-
 // Console output styles
 var (
 	cliHeaderStyle = lipgloss.NewStyle().
@@ -253,11 +247,6 @@ func collectWorkloadInfo(ctx context.Context, k8sClient *k8s.Client, argoCDApps 
 func runMigrate(_ *cobra.Command, _ []string) error {
 	ctx := context.Background()
 
-	// Validate scaleMode
-	if scaleMode != scaleModeAuto && scaleMode != scaleModeManual {
-		return fmt.Errorf("invalid scale mode '%s': must be either '%s' or '%s'", scaleMode, scaleModeAuto, scaleModeManual)
-	}
-
 	// Print header info
 	if configFile != "" {
 		fmt.Printf("%s %s\n", cliDimStyle.Render("📄 Config:"), configFile)
@@ -313,7 +302,7 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 	if totalWorkloads > 0 && !dryRun {
 		var err error
 		switch scaleMode {
-		case scaleModeManual:
+		case "manual":
 			err = mc.handleManualScaling()
 		default:
 			err = mc.handleAutoScaling()
@@ -558,7 +547,7 @@ func buildWorkloadsBox(workloadsByNS map[string][]string, isDryRun bool, mode st
 		case isDryRun:
 			content.WriteString(fmt.Sprintf("\n  %s",
 				cliDimStyle.Render(fmt.Sprintf("[dry-run] Would scale down %d workload(s)", totalWorkloads))))
-		case mode == scaleModeManual:
+		case mode == "manual":
 			content.WriteString(fmt.Sprintf("\n  %s %s",
 				cliWarningStyle.Render("⚠"),
 				fmt.Sprintf("%d workload(s) need to be scaled down (manual mode)", totalWorkloads)))
