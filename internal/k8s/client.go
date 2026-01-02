@@ -1,3 +1,5 @@
+// Package k8s provides Kubernetes client functionality for PVC/PV operations.
+// It handles PVC listing, workload scaling, and ArgoCD integration.
 package k8s
 
 import (
@@ -133,7 +135,14 @@ func (c *Client) GetPVCInfo(ctx context.Context, namespace, pvcName string) (*PV
 
 	capacity := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
 	capacityStr := capacity.String()
-	capacityGi := int32(capacity.Value() / (1024 * 1024 * 1024))
+	// Safe conversion: capacity is typically in GiB range, well within int32
+	capacityBytes := capacity.Value() / (1024 * 1024 * 1024)
+	var capacityGi int32
+	if capacityBytes > int64(^int32(0)) {
+		capacityGi = ^int32(0) // Max int32 if overflow would occur
+	} else {
+		capacityGi = int32(capacityBytes) //nolint:gosec // Overflow checked above
+	}
 	if capacityGi < 1 {
 		capacityGi = 1
 	}

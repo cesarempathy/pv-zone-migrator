@@ -1,3 +1,5 @@
+// Package ui provides the terminal user interface for the pvc-migrator tool.
+// It uses Bubble Tea for an interactive TUI experience.
 package ui
 
 import (
@@ -166,7 +168,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		if m.started && m.migrator.IsDone() {
-			return m, tea.Tick(time.Second, func(t time.Time) tea.Msg {
+			return m, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
 				return doneMsg{}
 			})
 		}
@@ -330,7 +332,9 @@ func (m Model) renderPVCStatus(status *migrator.PVCStatus) string {
 			b.WriteString(dimStyle.Render(fmt.Sprintf(" - %s", truncate(status.Error.Error(), 40))))
 		}
 
-	default:
+	case migrator.StepGetInfo, migrator.StepSnapshot, migrator.StepWaitSnapshot,
+		migrator.StepCreateVolume, migrator.StepWaitVolume, migrator.StepCleanup,
+		migrator.StepCreatePV, migrator.StepCreatePVC:
 		b.WriteString(m.spinner.View())
 		b.WriteString(" ")
 		b.WriteString(stepStyle.Render(status.Step.String()))
@@ -388,7 +392,8 @@ func (m Model) PrintSummary() {
 
 	for _, name := range pvcNames {
 		s := statuses[name]
-		if s.Step == migrator.StepDone {
+		switch s.Step {
+		case migrator.StepDone:
 			successCount++
 			duration := ""
 			if !s.EndTime.IsZero() && !s.StartTime.IsZero() {
@@ -398,16 +403,18 @@ func (m Model) PrintSummary() {
 			if s.NewVolumeID != "" {
 				fmt.Printf("    %s %s\n", dimStyle.Render("New Volume:"), s.NewVolumeID)
 			}
-		} else if s.Step == migrator.StepSkipped {
+		case migrator.StepSkipped:
 			skippedCount++
 			fmt.Printf("  %s %s %s\n", warningStyle.Render("○"), s.Name, dimStyle.Render("(already in target zone)"))
-		} else if s.Step == migrator.StepFailed {
+		case migrator.StepFailed:
 			failedCount++
 			fmt.Printf("  %s %s\n", errorStyle.Render("✗"), s.Name)
 			if s.Error != nil {
 				fmt.Printf("    %s %s\n", errorStyle.Render("Error:"), s.Error.Error())
 			}
-		} else {
+		case migrator.StepPending, migrator.StepGetInfo, migrator.StepSnapshot,
+			migrator.StepWaitSnapshot, migrator.StepCreateVolume, migrator.StepWaitVolume,
+			migrator.StepCleanup, migrator.StepCreatePV, migrator.StepCreatePVC:
 			fmt.Printf("  %s %s (Incomplete)\n", warningStyle.Render("○"), s.Name)
 		}
 	}
@@ -431,9 +438,9 @@ func (m Model) PrintSummary() {
 	fmt.Println()
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max-3] + "..."
+	return s[:maxLen-3] + "..."
 }

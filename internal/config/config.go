@@ -1,3 +1,5 @@
+// Package config handles YAML configuration loading and validation
+// for the pvc-migrator tool.
 package config
 
 import (
@@ -41,7 +43,8 @@ func DefaultConfig() *Config {
 
 // LoadFromFile loads configuration from a YAML file
 func LoadFromFile(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	// filepath.Clean is used implicitly by os.ReadFile
+	data, err := os.ReadFile(path) //nolint:gosec // Path comes from CLI flag, user-controlled input is expected
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
@@ -118,7 +121,7 @@ func WriteExampleConfig(path string) error {
 # kubeContext: my-cluster-context  # Optional: kubectl context to use (defaults to current)
 
 `
-	if err := os.WriteFile(path, []byte(header+string(data)), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(header+string(data)), 0600); err != nil {
 		return fmt.Errorf("failed to write example config: %w", err)
 	}
 

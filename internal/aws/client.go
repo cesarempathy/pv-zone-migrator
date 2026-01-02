@@ -1,3 +1,5 @@
+// Package aws provides AWS EC2 client functionality for EBS volume operations.
+// It handles snapshot creation, volume creation, and state monitoring.
 package aws
 
 import (
@@ -76,7 +78,7 @@ func (c *Client) GetSnapshotProgress(ctx context.Context, snapshotID string) (in
 	snapshot := result.Snapshots[0]
 	progress := 0
 	if snapshot.Progress != nil {
-		fmt.Sscanf(*snapshot.Progress, "%d%%", &progress)
+		_, _ = fmt.Sscanf(*snapshot.Progress, "%d%%", &progress)
 	}
 
 	return progress, string(snapshot.State), nil

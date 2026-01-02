@@ -1,3 +1,5 @@
+// Package cmd implements the CLI commands for the pvc-migrator tool.
+// It provides commands for migrating PVCs between AWS Availability Zones.
 package cmd
 
 import (
@@ -50,7 +52,199 @@ var (
 			Width(16)
 )
 
-func runMigrate(cmd *cobra.Command, args []string) error {
+// scaledWorkloadsPerNS stores scaled workloads for a namespace
+type scaledWorkloadsPerNS struct {
+	Namespace string
+	Workloads []k8s.WorkloadInfo
+}
+
+// migrationContext holds shared state for the migration process
+type migrationContext struct {
+	ctx              context.Context
+	k8sClient        *k8s.Client
+	argoCDApps       []k8s.ArgoCDAppInfo
+	scaledWorkloads  []scaledWorkloadsPerNS
+	workloadInfoByNS map[string][]k8s.WorkloadInfo
+}
+
+// restoreOnError restores workloads and ArgoCD state on error
+func (mc *migrationContext) restoreOnError() {
+	for _, sw := range mc.scaledWorkloads {
+		fmt.Printf("⚠️  Restoring workloads in namespace '%s' due to error...\n", sw.Namespace)
+		_ = mc.k8sClient.ScaleUpWorkloads(mc.ctx, sw.Namespace, sw.Workloads)
+	}
+	if len(mc.argoCDApps) > 0 {
+		_ = mc.k8sClient.EnableArgoCDAutoSync(mc.ctx, mc.argoCDApps)
+	}
+}
+
+// handleManualScaling handles manual workload scaling mode
+func (mc *migrationContext) handleManualScaling() error {
+	fmt.Println()
+	fmt.Println(cliWarningStyle.Render("⚠️  Please scale down the workloads manually before proceeding:"))
+	fmt.Println()
+
+	for ns, workloads := range mc.workloadInfoByNS {
+		if len(workloads) == 0 {
+			continue
+		}
+		for _, w := range workloads {
+			var cmdStr string
+			switch w.Kind {
+			case "Deployment":
+				cmdStr = fmt.Sprintf("kubectl scale deployment %s --replicas=0 -n %s", w.Name, ns)
+			case "StatefulSet":
+				cmdStr = fmt.Sprintf("kubectl scale statefulset %s --replicas=0 -n %s", w.Name, ns)
+			}
+			if kubeContext != "" {
+				cmdStr += fmt.Sprintf(" --context=%s", kubeContext)
+			}
+			fmt.Printf("  %s\n", cliDimStyle.Render(cmdStr))
+		}
+	}
+
+	fmt.Println()
+	fmt.Println(cliInfoStyle.Render("Waiting for you to run the commands above..."))
+	fmt.Println(cliDimStyle.Render("Press Enter when workloads are scaled down, or 'q' to quit:"))
+
+	var input string
+	_, _ = fmt.Scanln(&input)
+	if strings.ToLower(strings.TrimSpace(input)) == "q" {
+		if len(mc.argoCDApps) > 0 {
+			_ = mc.k8sClient.EnableArgoCDAutoSync(mc.ctx, mc.argoCDApps)
+		}
+		return fmt.Errorf("migration cancelled by user")
+	}
+
+	// Record workloads for restoration
+	for ns, workloads := range mc.workloadInfoByNS {
+		if len(workloads) > 0 {
+			mc.scaledWorkloads = append(mc.scaledWorkloads, scaledWorkloadsPerNS{Namespace: ns, Workloads: workloads})
+		}
+	}
+
+	// Wait for pods to terminate
+	fmt.Println(cliInfoStyle.Render("⏳ Verifying workloads are scaled down..."))
+	for _, ns := range namespaces {
+		if len(mc.workloadInfoByNS[ns]) > 0 {
+			if err := mc.k8sClient.WaitForWorkloadsScaledDown(mc.ctx, ns, 5*time.Minute); err != nil {
+				if len(mc.argoCDApps) > 0 {
+					_ = mc.k8sClient.EnableArgoCDAutoSync(mc.ctx, mc.argoCDApps)
+				}
+				return fmt.Errorf("workloads not scaled down in namespace '%s': %w", ns, err)
+			}
+		}
+	}
+	fmt.Println(cliSuccessStyle.Render("✓ All workloads scaled down"))
+	return nil
+}
+
+// handleAutoScaling handles automatic workload scaling mode
+func (mc *migrationContext) handleAutoScaling() error {
+	for _, ns := range namespaces {
+		runningWorkloads := mc.workloadInfoByNS[ns]
+		if len(runningWorkloads) == 0 {
+			continue
+		}
+
+		scaledWorkloads, err := mc.k8sClient.ScaleDownWorkloads(mc.ctx, ns)
+		if err != nil {
+			mc.restoreOnError()
+			return fmt.Errorf("failed to scale down workloads in namespace '%s': %w", ns, err)
+		}
+		mc.scaledWorkloads = append(mc.scaledWorkloads, scaledWorkloadsPerNS{Namespace: ns, Workloads: scaledWorkloads})
+
+		if err := mc.k8sClient.WaitForWorkloadsScaledDown(mc.ctx, ns, 5*time.Minute); err != nil {
+			mc.restoreOnError()
+			return fmt.Errorf("failed waiting for pods to terminate in namespace '%s': %w", ns, err)
+		}
+	}
+	return nil
+}
+
+// pvcWithNamespace represents a PVC with its namespace
+type pvcWithNamespace struct {
+	Namespace string
+	Name      string
+}
+
+// discoverPVCs discovers all PVCs from configured namespaces
+func discoverPVCs(ctx context.Context, k8sClient *k8s.Client) ([]pvcWithNamespace, map[string][]string, error) {
+	var allPVCs []pvcWithNamespace
+	pvcsByNamespace := make(map[string][]string)
+
+	for _, nsCfg := range cfg.Namespaces {
+		if len(nsCfg.PVCs) > 0 {
+			for _, pvc := range nsCfg.PVCs {
+				allPVCs = append(allPVCs, pvcWithNamespace{Namespace: nsCfg.Name, Name: pvc})
+			}
+			pvcsByNamespace[nsCfg.Name] = nsCfg.PVCs
+		} else {
+			discovered, err := k8sClient.ListPVCs(ctx, nsCfg.Name)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to list PVCs in namespace '%s': %w", nsCfg.Name, err)
+			}
+			pvcsByNamespace[nsCfg.Name] = discovered
+			for _, pvc := range discovered {
+				allPVCs = append(allPVCs, pvcWithNamespace{Namespace: nsCfg.Name, Name: pvc})
+			}
+		}
+	}
+	return allPVCs, pvcsByNamespace, nil
+}
+
+// handleArgoCDApps finds and disables ArgoCD auto-sync for affected applications
+func handleArgoCDApps(ctx context.Context, k8sClient *k8s.Client) ([]k8s.ArgoCDAppInfo, error) {
+	if skipArgoCD {
+		return nil, nil
+	}
+
+	var argoCDApps []k8s.ArgoCDAppInfo
+	for _, ns := range namespaces {
+		apps, err := k8sClient.FindArgoCDAppsForNamespace(ctx, ns, argoCDNamespaces)
+		if err != nil {
+			continue
+		}
+		argoCDApps = append(argoCDApps, apps...)
+	}
+
+	argoCDAppNames := make([]string, 0, len(argoCDApps))
+	for _, app := range argoCDApps {
+		argoCDAppNames = append(argoCDAppNames, fmt.Sprintf("%s/%s", app.Namespace, app.Name))
+	}
+
+	fmt.Println(buildArgoCDBox(argoCDAppNames, argoCDNamespaces, dryRun))
+
+	if len(argoCDApps) > 0 && !dryRun {
+		if err := k8sClient.DisableArgoCDAutoSync(ctx, argoCDApps); err != nil {
+			return nil, fmt.Errorf("failed to disable ArgoCD auto-sync: %w", err)
+		}
+	}
+	return argoCDApps, nil
+}
+
+// collectWorkloadInfo gathers information about running workloads in all namespaces
+func collectWorkloadInfo(ctx context.Context, k8sClient *k8s.Client, argoCDApps []k8s.ArgoCDAppInfo) (map[string][]string, map[string][]k8s.WorkloadInfo, error) {
+	workloadsByNS := make(map[string][]string)
+	workloadInfoByNS := make(map[string][]k8s.WorkloadInfo)
+
+	for _, ns := range namespaces {
+		runningWorkloads, err := k8sClient.GetWorkloadStatus(ctx, ns)
+		if err != nil {
+			if len(argoCDApps) > 0 && !dryRun {
+				_ = k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps)
+			}
+			return nil, nil, fmt.Errorf("failed to check workload status in namespace '%s': %w", ns, err)
+		}
+		workloadInfoByNS[ns] = runningWorkloads
+		for _, w := range runningWorkloads {
+			workloadsByNS[ns] = append(workloadsByNS[ns], fmt.Sprintf("%s/%s (replicas: %d)", w.Kind, w.Name, w.Replicas))
+		}
+	}
+	return workloadsByNS, workloadInfoByNS, nil
+}
+
+func runMigrate(_ *cobra.Command, _ []string) error {
 	ctx := context.Background()
 
 	// Print header info
@@ -67,215 +261,66 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
-	// Build PVC list with namespace info
-	type pvcWithNamespace struct {
-		Namespace string
-		Name      string
+	// Discover PVCs
+	allPVCs, pvcsByNamespace, err := discoverPVCs(ctx, k8sClient)
+	if err != nil {
+		return err
 	}
-	var allPVCs []pvcWithNamespace
-	pvcsByNamespace := make(map[string][]string)
-
-	// Process each namespace from config (silently collect data)
-	for _, nsCfg := range cfg.Namespaces {
-		if len(nsCfg.PVCs) > 0 {
-			// Use specified PVCs for this namespace
-			for _, pvc := range nsCfg.PVCs {
-				allPVCs = append(allPVCs, pvcWithNamespace{Namespace: nsCfg.Name, Name: pvc})
-			}
-			pvcsByNamespace[nsCfg.Name] = nsCfg.PVCs
-		} else {
-			// Discover all PVCs in this namespace
-			discovered, err := k8sClient.ListPVCs(ctx, nsCfg.Name)
-			if err != nil {
-				return fmt.Errorf("failed to list PVCs in namespace '%s': %w", nsCfg.Name, err)
-			}
-			pvcsByNamespace[nsCfg.Name] = discovered
-			if len(discovered) == 0 {
-				continue
-			}
-			for _, pvc := range discovered {
-				allPVCs = append(allPVCs, pvcWithNamespace{Namespace: nsCfg.Name, Name: pvc})
-			}
-		}
-	}
-
 	if len(allPVCs) == 0 {
 		return fmt.Errorf("no PVCs found in any of the specified namespaces")
 	}
-
-	// Print PVC Discovery box
 	fmt.Println(buildDiscoveryBox(pvcsByNamespace, len(allPVCs)))
 
-	// Check for ArgoCD applications managing these namespaces
-	var argoCDApps []k8s.ArgoCDAppInfo
-	var argoCDAppNames []string
-	if !skipArgoCD {
-		for _, ns := range namespaces {
-			apps, err := k8sClient.FindArgoCDAppsForNamespace(ctx, ns, argoCDNamespaces)
-			if err != nil {
-				continue
-			}
-			argoCDApps = append(argoCDApps, apps...)
-		}
-		for _, app := range argoCDApps {
-			argoCDAppNames = append(argoCDAppNames, fmt.Sprintf("%s/%s", app.Namespace, app.Name))
-		}
-
-		// Print ArgoCD box
-		fmt.Println(buildArgoCDBox(argoCDAppNames, argoCDNamespaces, dryRun))
-
-		if len(argoCDApps) > 0 && !dryRun {
-			if err := k8sClient.DisableArgoCDAutoSync(ctx, argoCDApps); err != nil {
-				return fmt.Errorf("failed to disable ArgoCD auto-sync: %w", err)
-			}
-		}
+	// Handle ArgoCD applications
+	argoCDApps, err := handleArgoCDApps(ctx, k8sClient)
+	if err != nil {
+		return err
 	}
 
-	// Check for running workloads and scale them down in all namespaces
-	type scaledWorkloadsPerNS struct {
-		Namespace string
-		Workloads []k8s.WorkloadInfo
+	// Collect workload information
+	workloadsByNS, workloadInfoByNS, err := collectWorkloadInfo(ctx, k8sClient, argoCDApps)
+	if err != nil {
+		return err
 	}
-	var allScaledWorkloads []scaledWorkloadsPerNS
-
-	// Collect workload info for all namespaces first
-	workloadsByNS := make(map[string][]string)
-	workloadInfoByNS := make(map[string][]k8s.WorkloadInfo)
-
-	for _, ns := range namespaces {
-		runningWorkloads, err := k8sClient.GetWorkloadStatus(ctx, ns)
-		if err != nil {
-			// Restore ArgoCD if we disabled it
-			if len(argoCDApps) > 0 && !dryRun {
-				_ = k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps)
-			}
-			return fmt.Errorf("failed to check workload status in namespace '%s': %w", ns, err)
-		}
-		workloadInfoByNS[ns] = runningWorkloads
-		for _, w := range runningWorkloads {
-			workloadsByNS[ns] = append(workloadsByNS[ns], fmt.Sprintf("%s/%s (replicas: %d)", w.Kind, w.Name, w.Replicas))
-		}
-	}
-
-	// Print workloads box
 	fmt.Println(buildWorkloadsBox(workloadsByNS, dryRun, scaleMode))
 
-	// If there are running workloads and not dry-run, handle scaling based on mode
+	// Calculate total workloads
 	totalWorkloads := 0
 	for _, workloads := range workloadsByNS {
 		totalWorkloads += len(workloads)
 	}
 
+	// Create migration context for helper functions
+	mc := &migrationContext{
+		ctx:              ctx,
+		k8sClient:        k8sClient,
+		argoCDApps:       argoCDApps,
+		workloadInfoByNS: workloadInfoByNS,
+	}
+
+	// Handle workload scaling if needed
 	if totalWorkloads > 0 && !dryRun {
-		if scaleMode == "manual" {
-			// Manual mode: Show the kubectl commands and wait for user confirmation
-			fmt.Println()
-			fmt.Println(cliWarningStyle.Render("⚠️  Please scale down the workloads manually before proceeding:"))
-			fmt.Println()
-			for ns, workloads := range workloadInfoByNS {
-				if len(workloads) == 0 {
-					continue
-				}
-				for _, w := range workloads {
-					var cmdStr string
-					if w.Kind == "Deployment" {
-						cmdStr = fmt.Sprintf("kubectl scale deployment %s --replicas=0 -n %s", w.Name, ns)
-					} else if w.Kind == "StatefulSet" {
-						cmdStr = fmt.Sprintf("kubectl scale statefulset %s --replicas=0 -n %s", w.Name, ns)
-					}
-					if kubeContext != "" {
-						cmdStr += fmt.Sprintf(" --context=%s", kubeContext)
-					}
-					fmt.Printf("  %s\n", cliDimStyle.Render(cmdStr))
-				}
-			}
-			fmt.Println()
-			fmt.Println(cliInfoStyle.Render("Waiting for you to run the commands above..."))
-			fmt.Println(cliDimStyle.Render("Press Enter when workloads are scaled down, or 'q' to quit:"))
-
-			// Wait for user confirmation
-			var input string
-			fmt.Scanln(&input)
-			if strings.ToLower(strings.TrimSpace(input)) == "q" {
-				// Restore ArgoCD if we disabled it
-				if len(argoCDApps) > 0 {
-					_ = k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps)
-				}
-				return fmt.Errorf("migration cancelled by user")
-			}
-
-			// After user confirms, record the workloads for restoration later
-			for ns, workloads := range workloadInfoByNS {
-				if len(workloads) > 0 {
-					allScaledWorkloads = append(allScaledWorkloads, scaledWorkloadsPerNS{Namespace: ns, Workloads: workloads})
-				}
-			}
-
-			// Wait for pods to actually terminate
-			fmt.Println(cliInfoStyle.Render("⏳ Verifying workloads are scaled down..."))
-			for _, ns := range namespaces {
-				if len(workloadInfoByNS[ns]) > 0 {
-					if err := k8sClient.WaitForWorkloadsScaledDown(ctx, ns, 5*time.Minute); err != nil {
-						// Restore ArgoCD if we disabled it
-						if len(argoCDApps) > 0 {
-							_ = k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps)
-						}
-						return fmt.Errorf("workloads not scaled down in namespace '%s': %w", ns, err)
-					}
-				}
-			}
-			fmt.Println(cliSuccessStyle.Render("✓ All workloads scaled down"))
-		} else {
-			// Auto mode: Scale down workloads automatically
-			for _, ns := range namespaces {
-				runningWorkloads := workloadInfoByNS[ns]
-				if len(runningWorkloads) > 0 {
-					scaledWorkloads, err := k8sClient.ScaleDownWorkloads(ctx, ns)
-					if err != nil {
-						// Restore ArgoCD if we disabled it
-						if len(argoCDApps) > 0 {
-							_ = k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps)
-						}
-						// Restore already scaled workloads
-						for _, sw := range allScaledWorkloads {
-							_ = k8sClient.ScaleUpWorkloads(ctx, sw.Namespace, sw.Workloads)
-						}
-						return fmt.Errorf("failed to scale down workloads in namespace '%s': %w", ns, err)
-					}
-					allScaledWorkloads = append(allScaledWorkloads, scaledWorkloadsPerNS{Namespace: ns, Workloads: scaledWorkloads})
-
-					if err := k8sClient.WaitForWorkloadsScaledDown(ctx, ns, 5*time.Minute); err != nil {
-						// Try to restore workloads and ArgoCD
-						for _, sw := range allScaledWorkloads {
-							_ = k8sClient.ScaleUpWorkloads(ctx, sw.Namespace, sw.Workloads)
-						}
-						if len(argoCDApps) > 0 {
-							_ = k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps)
-						}
-						return fmt.Errorf("failed waiting for pods to terminate in namespace '%s': %w", ns, err)
-					}
-				}
-			}
+		var err error
+		switch scaleMode {
+		case "manual":
+			err = mc.handleManualScaling()
+		default:
+			err = mc.handleAutoScaling()
+		}
+		if err != nil {
+			return err
 		}
 	}
 
 	// Initialize AWS EC2 client
 	ec2Client, err := aws.NewEC2Client(ctx)
 	if err != nil {
-		// Restore workloads before returning error
-		for _, sw := range allScaledWorkloads {
-			fmt.Printf("⚠️  Restoring workloads in namespace '%s' due to error...\n", sw.Namespace)
-			_ = k8sClient.ScaleUpWorkloads(ctx, sw.Namespace, sw.Workloads)
-		}
-		// Restore ArgoCD auto-sync
-		if len(argoCDApps) > 0 && !dryRun {
-			_ = k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps)
-		}
+		mc.restoreOnError()
 		return fmt.Errorf("failed to create AWS EC2 client: %w", err)
 	}
 
 	// Build PVC list with namespace prefix for the migrator
-	var pvcListWithNS []string
+	pvcListWithNS := make([]string, 0, len(allPVCs))
 	for _, pvc := range allPVCs {
 		pvcListWithNS = append(pvcListWithNS, fmt.Sprintf("%s/%s", pvc.Namespace, pvc.Name))
 	}
@@ -324,15 +369,7 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 
 	finalModel, err := p.Run()
 	if err != nil {
-		// Restore workloads before returning error
-		for _, sw := range allScaledWorkloads {
-			fmt.Printf("⚠️  Restoring workloads in namespace '%s' due to error...\n", sw.Namespace)
-			_ = k8sClient.ScaleUpWorkloads(ctx, sw.Namespace, sw.Workloads)
-		}
-		// Restore ArgoCD auto-sync
-		if len(argoCDApps) > 0 && !dryRun {
-			_ = k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps)
-		}
+		mc.restoreOnError()
 		return fmt.Errorf("UI error: %w", err)
 	}
 
@@ -342,9 +379,9 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Scale workloads back up if we scaled them down
-	if len(allScaledWorkloads) > 0 && !dryRun {
+	if len(mc.scaledWorkloads) > 0 && !dryRun {
 		fmt.Println("\n🚀 Restoring workloads to original replica counts...")
-		for _, sw := range allScaledWorkloads {
+		for _, sw := range mc.scaledWorkloads {
 			fmt.Printf("   Namespace '%s':\n", sw.Namespace)
 			for _, w := range sw.Workloads {
 				fmt.Printf("     - %s/%s → %d replicas\n", w.Kind, w.Name, w.Replicas)
@@ -359,12 +396,12 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Re-enable ArgoCD auto-sync
-	if len(argoCDApps) > 0 && !dryRun {
+	if len(mc.argoCDApps) > 0 && !dryRun {
 		fmt.Println("\n🔓 Re-enabling ArgoCD auto-sync...")
-		for _, app := range argoCDApps {
+		for _, app := range mc.argoCDApps {
 			fmt.Printf("   - %s/%s\n", app.Namespace, app.Name)
 		}
-		if err := k8sClient.EnableArgoCDAutoSync(ctx, argoCDApps); err != nil {
+		if err := k8sClient.EnableArgoCDAutoSync(ctx, mc.argoCDApps); err != nil {
 			fmt.Printf("⚠️  Warning: Failed to re-enable ArgoCD auto-sync: %v\n", err)
 			fmt.Println("   Please manually re-enable auto-sync in ArgoCD")
 		} else {
@@ -506,14 +543,15 @@ func buildWorkloadsBox(workloadsByNS map[string][]string, isDryRun bool, mode st
 			cliSuccessStyle.Render("✓"),
 			cliDimStyle.Render("No running workloads found")))
 	} else {
-		if isDryRun {
+		switch {
+		case isDryRun:
 			content.WriteString(fmt.Sprintf("\n  %s",
 				cliDimStyle.Render(fmt.Sprintf("[dry-run] Would scale down %d workload(s)", totalWorkloads))))
-		} else if mode == "manual" {
+		case mode == "manual":
 			content.WriteString(fmt.Sprintf("\n  %s %s",
 				cliWarningStyle.Render("⚠"),
 				fmt.Sprintf("%d workload(s) need to be scaled down (manual mode)", totalWorkloads)))
-		} else {
+		default:
 			content.WriteString(fmt.Sprintf("\n  %s %s",
 				cliInfoStyle.Render("→"),
 				fmt.Sprintf("Scaling down %d workload(s)...", totalWorkloads)))

@@ -52,7 +52,7 @@ Example:
   # Using a config file:
   pvc-migrator migrate -c config.yaml`,
 	Version: "1.0.0",
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 		return loadConfig(cmd)
 	},
 }
@@ -69,7 +69,7 @@ var initConfigCmd = &cobra.Command{
 	Short: "Generate an example configuration file",
 	Long:  `Generate an example YAML configuration file with default values.`,
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		filename := "pvc-migrator.yaml"
 		if len(args) > 0 {
 			filename = args[0]
@@ -161,6 +161,7 @@ func loadConfig(cmd *cobra.Command) error {
 	return nil
 }
 
+// Execute runs the root command and handles any errors.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
