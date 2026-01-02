@@ -26,6 +26,7 @@ var (
 	skipArgoCD       bool
 	argoCDNamespaces []string
 	planOnly         bool
+	scaleMode        string // "auto" or "manual"
 )
 
 var rootCmd = &cobra.Command{
@@ -95,6 +96,7 @@ func init() {
 	migrateCmd.Flags().BoolVar(&skipArgoCD, "skip-argocd", false, "Skip ArgoCD auto-sync detection and handling")
 	migrateCmd.Flags().StringSliceVar(&argoCDNamespaces, "argocd-namespaces", nil, "Namespaces to search for ArgoCD applications")
 	migrateCmd.Flags().BoolVar(&planOnly, "plan", false, "Show migration plan and exit without executing")
+	migrateCmd.Flags().StringVar(&scaleMode, "mode", "manual", "Scale-down mode: 'auto' (program scales down) or 'manual' (show commands, wait for user)")
 
 	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(initConfigCmd)
