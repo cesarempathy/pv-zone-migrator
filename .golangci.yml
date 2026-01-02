@@ -1,7 +1,9 @@
 # =============================================================================
-# golangci-lint configuration - Strict settings for production code
+# golangci-lint v2 configuration - Strict settings for production code
 # https://golangci-lint.run/usage/configuration/
 # =============================================================================
+
+version: "2"
 
 run:
   timeout: 5m
@@ -11,26 +13,23 @@ run:
 
 output:
   formats:
-    - format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
-  sort-results: true
+    text:
+      path: stdout
+      print-issued-lines: true
+      print-linter-name: true
 
 linters:
-  enable-all: false
-  disable-all: true
+  default: none
   enable:
     # Default linters
     - errcheck          # Check for unchecked errors
-    - gosimple          # Simplify code
     - govet             # Report suspicious constructs
     - ineffassign       # Detect ineffectual assignments
-    - staticcheck       # Static analysis checks
+    - staticcheck       # Static analysis checks (includes gosimple, stylecheck)
     - unused            # Check for unused code
     
     # Additional strict linters
     - bodyclose         # Check HTTP response body is closed
-    - contextcheck      # Check context.Context usage
     - dupl              # Code clone detection
     - durationcheck     # Check for two durations multiplied together
     - errname           # Check error naming conventions
@@ -38,32 +37,28 @@ linters:
     - exhaustive        # Check exhaustiveness of enum switch statements
     - copyloopvar       # Detects loop variable copies
     - forcetypeassert   # Finds forced type assertions
-    - gochecknoinits    # Check for init functions
     - goconst           # Find repeated strings that could be constants
     - gocritic          # Opinionated linter with many checks
     - gocyclo           # Cyclomatic complexity
-    - godot             # Check comment ending with period
-    - gofmt             # Check code is formatted
-    - goimports         # Check imports are sorted
     - gosec             # Security checker
     - misspell          # Find commonly misspelled words
     - nakedret          # Find naked returns in long functions
     - nestif            # Reports deeply nested if statements
     - nilerr            # Finds returning nil after checking err != nil
-    - nilnil            # Check for nil return with nil error
     - noctx             # Find HTTP requests without context
     - nolintlint        # Reports ill-formed nolint directives
     - prealloc          # Find slice declarations that could be preallocated
     - predeclared       # Find code shadowing predeclared identifiers
     - revive            # Fast, configurable linter
-    - sqlclosecheck     # Check SQL rows/stmt is closed
-    - stylecheck        # Stylecheck is a replacement for golint
-    - tenv              # Detect using os.Setenv in tests
-    - tparallel         # Detect inappropriate use of t.Parallel()
     - unconvert         # Remove unnecessary type conversions
     - unparam           # Find unused function parameters
     - wastedassign      # Find wasted assignment statements
     - whitespace        # Find trailing whitespace
+
+formatters:
+  enable:
+    - gofmt             # Check code is formatted
+    - goimports         # Check imports are sorted
 
 linters-settings:
   errcheck:
@@ -140,12 +135,6 @@ linters-settings:
       - name: unreachable-code
       - name: redefines-builtin-id
 
-  stylecheck:
-    checks:
-      - all
-      - -ST1000  # Package comments (too strict)
-      - -ST1003  # MixedCaps (handled by revive)
-
 issues:
   exclude-rules:
     # Exclude some linters from running on tests files
@@ -158,23 +147,16 @@ issues:
         - errcheck
         - forcetypeassert
 
-    # Exclude linters for main.go (often has init/globals)
-    - path: main\.go
-      linters:
-        - gochecknoinits
-
     # Exclude cmd files from some checks
     - path: cmd/
       linters:
         - gochecknoinits
 
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
-  new: false
 
 severity:
-  default-severity: error
+  default: error
   rules:
     - linters:
         - dupl

@@ -1,3 +1,5 @@
+// Package migrator implements the core PVC migration logic.
+// It orchestrates the migration process including snapshots, volumes, and Kubernetes resources.
 package migrator
 
 import (
@@ -24,6 +26,7 @@ type Config struct {
 // Step represents a migration step
 type Step int
 
+// Migration step constants representing the state of a PVC migration.
 const (
 	StepPending Step = iota
 	StepGetInfo
@@ -90,6 +93,7 @@ func ParsePVCName(fullName string) (namespace, pvcName string) {
 // PlanAction represents what will happen to a PVC
 type PlanAction int
 
+// Plan action constants representing what will happen to a PVC.
 const (
 	PlanActionMigrate PlanAction = iota
 	PlanActionSkip

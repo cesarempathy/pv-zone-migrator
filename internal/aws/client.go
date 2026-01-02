@@ -1,3 +1,5 @@
+// Package aws provides AWS EC2 client functionality for EBS volume operations.
+// It handles snapshot creation, volume creation, and state monitoring.
 package aws
 
 import (
@@ -11,9 +13,17 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
+// ec2ClientAPI is the internal interface for EC2 SDK operations
+type ec2ClientAPI interface {
+	CreateSnapshot(ctx context.Context, params *ec2.CreateSnapshotInput, optFns ...func(*ec2.Options)) (*ec2.CreateSnapshotOutput, error)
+	DescribeSnapshots(ctx context.Context, params *ec2.DescribeSnapshotsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error)
+	CreateVolume(ctx context.Context, params *ec2.CreateVolumeInput, optFns ...func(*ec2.Options)) (*ec2.CreateVolumeOutput, error)
+	DescribeVolumes(ctx context.Context, params *ec2.DescribeVolumesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error)
+}
+
 // Client wraps the AWS EC2 client
 type Client struct {
-	ec2 *ec2.Client
+	ec2 ec2ClientAPI
 }
 
 // NewEC2Client creates a new AWS EC2 client
@@ -24,6 +34,11 @@ func NewEC2Client(ctx context.Context) (*Client, error) {
 	}
 
 	return &Client{ec2: ec2.NewFromConfig(cfg)}, nil
+}
+
+// NewEC2ClientWithInterface creates a Client with a custom EC2 API implementation (for testing)
+func NewEC2ClientWithInterface(api ec2ClientAPI) *Client {
+	return &Client{ec2: api}
 }
 
 // CreateSnapshot creates an EBS snapshot
@@ -76,7 +91,7 @@ func (c *Client) GetSnapshotProgress(ctx context.Context, snapshotID string) (in
 	snapshot := result.Snapshots[0]
 	progress := 0
 	if snapshot.Progress != nil {
-		fmt.Sscanf(*snapshot.Progress, "%d%%", &progress)
+		_, _ = fmt.Sscanf(*snapshot.Progress, "%d%%", &progress)
 	}
 
 	return progress, string(snapshot.State), nil

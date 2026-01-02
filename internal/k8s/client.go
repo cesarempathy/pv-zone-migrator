@@ -1,3 +1,5 @@
+// Package k8s provides Kubernetes client functionality for PVC/PV operations.
+// It handles PVC listing, workload scaling, and ArgoCD integration.
 package k8s
 
 import (
@@ -21,7 +23,7 @@ import (
 
 // Client wraps the Kubernetes clientset
 type Client struct {
-	clientset     *kubernetes.Clientset
+	clientset     kubernetes.Interface
 	dynamicClient dynamic.Interface
 }
 
@@ -84,6 +86,14 @@ func NewClient(kubeContext string) (*Client, error) {
 	}, nil
 }
 
+// NewClientWithInterface creates a Client with a custom clientset (for testing)
+func NewClientWithInterface(clientset kubernetes.Interface, dynamicClient dynamic.Interface) *Client {
+	return &Client{
+		clientset:     clientset,
+		dynamicClient: dynamicClient,
+	}
+}
+
 // ListPVCs returns all PVC names in the given namespace
 func (c *Client) ListPVCs(ctx context.Context, namespace string) ([]string, error) {
 	pvcList, err := c.clientset.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{})
@@ -133,7 +143,16 @@ func (c *Client) GetPVCInfo(ctx context.Context, namespace, pvcName string) (*PV
 
 	capacity := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
 	capacityStr := capacity.String()
-	capacityGi := int32(capacity.Value() / (1024 * 1024 * 1024))
+	// Safe conversion: capacity is typically in GiB range, well within int32
+	capacityBytes := capacity.Value() / (1024 * 1024 * 1024)
+	var capacityGi int32
+	// Check if value fits in int32 (max 2147483647)
+	const maxInt32 = int64(1<<31 - 1)
+	if capacityBytes > maxInt32 {
+		capacityGi = int32(maxInt32) // Max int32 if overflow would occur
+	} else {
+		capacityGi = int32(capacityBytes) //nolint:gosec // Overflow checked above
+	}
 	if capacityGi < 1 {
 		capacityGi = 1
 	}

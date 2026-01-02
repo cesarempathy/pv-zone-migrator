@@ -26,6 +26,7 @@ var (
 	skipArgoCD       bool
 	argoCDNamespaces []string
 	planOnly         bool
+	scaleMode        string // "auto" or "manual"
 )
 
 var rootCmd = &cobra.Command{
@@ -51,7 +52,7 @@ Example:
   # Using a config file:
   pvc-migrator migrate -c config.yaml`,
 	Version: "1.0.0",
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 		return loadConfig(cmd)
 	},
 }
@@ -68,7 +69,7 @@ var initConfigCmd = &cobra.Command{
 	Short: "Generate an example configuration file",
 	Long:  `Generate an example YAML configuration file with default values.`,
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		filename := "pvc-migrator.yaml"
 		if len(args) > 0 {
 			filename = args[0]
@@ -95,6 +96,7 @@ func init() {
 	migrateCmd.Flags().BoolVar(&skipArgoCD, "skip-argocd", false, "Skip ArgoCD auto-sync detection and handling")
 	migrateCmd.Flags().StringSliceVar(&argoCDNamespaces, "argocd-namespaces", nil, "Namespaces to search for ArgoCD applications")
 	migrateCmd.Flags().BoolVar(&planOnly, "plan", false, "Show migration plan and exit without executing")
+	migrateCmd.Flags().StringVar(&scaleMode, "mode", "manual", "Scale-down mode: 'auto' (program scales down) or 'manual' (show commands, wait for user)")
 
 	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(initConfigCmd)
@@ -159,6 +161,7 @@ func loadConfig(cmd *cobra.Command) error {
 	return nil
 }
 
+// Execute runs the root command and handles any errors.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

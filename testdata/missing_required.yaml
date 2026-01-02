@@ -1,0 +1,5 @@
+# Missing required fields
+namespaces: []
+targetZone: ""
+storageClass: ""
+maxConcurrency: 0
